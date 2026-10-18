@@ -105,6 +105,17 @@ bool set_sel_ide_for_cfg_req_in_ecap(
 );
 
 /**
+ * Set TEE-Limited Stream (bit 23) in a Selective IDE stream control register.
+ */
+bool set_tee_limited_in_ecap(
+    int fd,
+    TEST_IDE_TYPE ide_type,
+    uint8_t ide_id,
+    uint32_t ide_ecap_offset,
+    bool enable
+);
+
+/**
  * read ide_stream_ctrl register in ecap
 */
 uint32_t read_ide_stream_ctrl_in_ecap(
@@ -142,7 +153,7 @@ bool reset_ide_registers(
 /*
  * set prime_key_set_0/1 in stream_txrx_ctrl
 */
-void prime_rp_ide_key_set(
+bool prime_rp_ide_key_set(
     INTEL_KEYP_ROOT_COMPLEX_KCBAR *const kcbar_ptr,
     const uint8_t rp_stream_index,
     const uint8_t direction,
@@ -151,7 +162,7 @@ void prime_rp_ide_key_set(
 /**
  * set stream_txrx_control.stream_tx_control.key_set_select
 */
-void set_rp_ide_key_set_select(
+bool set_rp_ide_key_set_select(
     INTEL_KEYP_ROOT_COMPLEX_KCBAR *const kcbar_ptr,
     const uint8_t rp_stream_index,
     const uint8_t key_set_select);
@@ -217,7 +228,7 @@ bool pcie_ide_alloc_slot_ids(
  * enable rootport ide stream.
  * It will set registers in both PCIE ecap and Intel KCBAR.
 */
-void enable_rootport_ide_stream(
+bool enable_rootport_ide_stream(
     int cfg_space_fd,
     uint32_t ecap_offset,
     TEST_IDE_TYPE ide_type,

@@ -37,7 +37,8 @@ typedef union
         uint8_t supported_algo:5;
         uint8_t num_lnk_ide:3;
         uint8_t num_sel_ide;
-        uint8_t rsvd2;
+        uint8_t tee_limited_stream_supported:1;
+        uint8_t rsvd2:7;
     };
     uint32_t raw;
 } PCIE_IDE_CAP;
@@ -120,7 +121,7 @@ typedef union
     uint16_t algorithm:5;
     uint16_t tc:3;
     uint16_t default_stream:1;
-    uint16_t reserved2:1;
+    uint16_t tee_limited_stream:1;
     uint8_t stream_id;
   };
   uint32_t raw;

@@ -23,6 +23,8 @@
 #include "pcie_ide_test_internal.h"
 
 extern const char *k_set_names[];
+extern bool g_no_teardown;
+extern bool g_reuse_ide_stream;
 
 bool pcie_ide_test_full_1_setup(void *test_context)
 {
@@ -36,6 +38,10 @@ bool pcie_ide_test_full_1_setup(void *test_context)
 
   ide_common_test_port_context_t* upper_port = &group_context->common.upper_port;
   ide_common_test_port_context_t* lower_port = &group_context->common.lower_port;
+
+  if (g_reuse_ide_stream) {
+    return true;
+  }
 
   return setup_ide_stream(group_context->spdm_doe.doe_context, group_context->spdm_doe.spdm_context, &group_context->spdm_doe.session_id,
                           upper_port->mapped_kcbar_addr, group_context->stream_id, PCI_IDE_KM_KEY_SET_K0,
@@ -58,6 +64,10 @@ void pcie_ide_test_full_1_run(void *test_context)
   pcie_ide_test_group_context_t *group_context = (pcie_ide_test_group_context_t *)case_context->group_context;
   TEEIO_ASSERT(group_context);
   TEEIO_ASSERT(group_context->common.signature == GROUP_CONTEXT_SIGNATURE);
+
+  if (g_reuse_ide_stream) {
+    return;
+  }
 
   TEST_IDE_TYPE ide_type = TEST_IDE_TYPE_SEL_IDE;
   if (group_context->common.top->type == IDE_TEST_TOPOLOGY_TYPE_LINK_IDE)
@@ -86,8 +96,10 @@ void pcie_ide_test_full_1_run(void *test_context)
                     group_context->common.lower_port.ecap_offset,
                     ide_type);
 
-  TEEIO_PRINT(("ide_stream is setup. Press any key to continue.\n"));
-  getchar();
+  if (!g_no_teardown) {
+    TEEIO_PRINT(("ide_stream is setup. Press any key to continue.\n"));
+    getchar();
+  }
 
   teeio_record_assertion_result(case_class, case_id, 1, IDE_COMMON_TEST_CASE_ASSERTION_TYPE_TEST, TEEIO_TEST_RESULT_PASS, "PCIE-IDE Stream is setup.");
 }

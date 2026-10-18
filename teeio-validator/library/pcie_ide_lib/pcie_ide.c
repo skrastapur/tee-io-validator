@@ -18,6 +18,8 @@
 #include "teeio_debug.h"
 #include "ide_test.h"
 
+extern bool g_reuse_ide_stream;
+
 #include "teeio_spdmlib.h"
 #include "pcie_ide_internal.h"
 #include "pcie_ide_lib.h"
@@ -36,6 +38,8 @@
 #define PREFETCH_MEMORY_LIMIT_UPPER_OFFSET 0x2c
 
 #define LINK_IDE_REGISTER_BLOCK_SIZE (sizeof(PCIE_LNK_IDE_STREAM_CTRL) + sizeof(PCIE_LINK_IDE_STREAM_STATUS))
+#define IDE_KCBAR_READY_POLL_COUNT 1000
+#define IDE_KCBAR_READY_POLL_INTERVAL_US 1000
 
 extern uint32_t g_doe_extended_offset;
 
@@ -513,6 +517,114 @@ FindFreeLinkSelectiveIDERegisterBlockDone:
   return true;
 }
 
+/**
+ * Find an IN-USE IDE stream register block and KCBar stream slot.
+ * This is used in teardown mode (-d) when a previous -r run left the IDE stream active.
+ * Instead of looking for a free stream, we look for the active one matching the given stream_id.
+ */
+bool find_in_use_rp_stream_index_and_ide_id(ide_common_test_port_context_t* port_context, uint8_t* rp_stream_index, uint8_t* ide_id, IDE_TEST_TOPOLOGY_TYPE top_type, bool rp_or_dev, uint8_t stream_id)
+{
+  int i;
+
+  IDE_TEST_IDE_TYPE ide_type = IDE_TEST_IDE_TYPE_SEL_IDE;
+  if(top_type == IDE_TEST_TOPOLOGY_TYPE_LINK_IDE) {
+    ide_type = IDE_TEST_IDE_TYPE_LNK_IDE;
+  } else if(top_type == IDE_TEST_TOPOLOGY_TYPE_SEL_LINK_IDE) {
+    NOT_IMPLEMENTED("find_in_use_rp_stream_index_and_ide_id for IDE_TEST_TOPOLOGY_TYPE_SEL_LINK_IDE");
+    return false;
+  }
+
+  TEEIO_DEBUG((TEEIO_DEBUG_INFO, "find_in_use_rp_stream_index_and_ide_id for %s (stream_id=%d)\n", port_context->port->port_name, stream_id));
+
+  PCIE_IDE_CAP ide_cap = {.raw = port_context->ide_cap.raw};
+
+  int num_lnk_ide = ide_cap.lnk_ide_supported == 1 ? ide_cap.num_lnk_ide + 1 : 0;
+  int num_sel_ide = ide_cap.sel_ide_supported == 1 ? ide_cap.num_sel_ide + 1 : 0;
+
+  int offset = port_context->ecap_offset + sizeof(PCIE_CAP_ID) + sizeof(PCIE_IDE_CAP) + sizeof(PCIE_IDE_CTRL);
+  bool found = false;
+
+  if(ide_type == IDE_TEST_IDE_TYPE_LNK_IDE) {
+    TEEIO_DEBUG((TEEIO_DEBUG_INFO, "Walk thru Link IDE Stream Register Blocks to find in-use one.\n"));
+    if(ide_cap.lnk_ide_supported == 0) {
+      TEEIO_DEBUG((TEEIO_DEBUG_ERROR, "Link IDE is not supported.\n"));
+      goto FindInUseDone;
+    }
+    for(i = 0; i < num_lnk_ide; i++) {
+      PCIE_LNK_IDE_STREAM_CTRL lnk_ide_stream_ctrl = {.raw = device_pci_read_32(offset, port_context->cfg_space_fd)};
+      PCIE_LINK_IDE_STREAM_STATUS lnk_ide_stream_status = {.raw = device_pci_read_32(offset + 4, port_context->cfg_space_fd)};
+      TEEIO_DEBUG((TEEIO_DEBUG_INFO, "%d: lnk_ide_stream_ctrl = 0x%08x, lnk_ide_stream_status = 0x%08x\n", i, lnk_ide_stream_ctrl.raw, lnk_ide_stream_status.raw));
+
+      if(lnk_ide_stream_ctrl.enabled == 1 && lnk_ide_stream_ctrl.stream_id == stream_id) {
+        *ide_id = i;
+        found = true;
+        break;
+      }
+      offset += LINK_IDE_REGISTER_BLOCK_SIZE;
+    }
+  } else {
+    TEEIO_DEBUG((TEEIO_DEBUG_INFO, "Walk thru Selective IDE Stream Register Blocks to find in-use one.\n"));
+    if(ide_cap.sel_ide_supported == 0) {
+      TEEIO_DEBUG((TEEIO_DEBUG_ERROR, "Selective IDE is not supported.\n"));
+      goto FindInUseDone;
+    }
+
+    offset += (num_lnk_ide * LINK_IDE_REGISTER_BLOCK_SIZE);
+    for(i = num_lnk_ide; i < num_lnk_ide + num_sel_ide; i++) {
+      PCIE_SEL_IDE_STREAM_CAP sel_ide_stream_cap = {.raw = device_pci_read_32(offset, port_context->cfg_space_fd)};
+      offset += 4;
+      PCIE_SEL_IDE_STREAM_CTRL sel_ide_stream_ctrl = {.raw = device_pci_read_32(offset, port_context->cfg_space_fd)};
+      offset += 4;
+      PCIE_SEL_IDE_STREAM_STATUS sel_ide_stream_status = {.raw = device_pci_read_32(offset, port_context->cfg_space_fd)};
+      offset += 4;
+
+      TEEIO_DEBUG((TEEIO_DEBUG_INFO, "%d: sel_ide_stream_ctrl = 0x%08x, sel_ide_stream_status = 0x%08x\n", i, sel_ide_stream_ctrl.raw, sel_ide_stream_status.raw));
+      if(sel_ide_stream_ctrl.enabled == 1 && sel_ide_stream_ctrl.stream_id == stream_id) {
+        *ide_id = i;
+        found = true;
+        break;
+      }
+
+      offset += (2*4 + sel_ide_stream_cap.num_addr_assoc_reg_blocks * 3 * 4);
+    }
+  }
+
+FindInUseDone:
+  if(!found) {
+    TEEIO_DEBUG((TEEIO_DEBUG_ERROR, "Failed to find in-use Link/Selective IDE Register Block for stream_id=%d.\n", stream_id));
+    return false;
+  }
+
+  // Now find the in-use KCBar stream slot for root port
+  if(rp_or_dev) {
+    found = false;
+    TEEIO_DEBUG((TEEIO_DEBUG_INFO, "Walk thru Rootport KCBar stream_x to find in-use one for stream_id=%d.\n", stream_id));
+    INTEL_KEYP_ROOT_COMPLEX_KCBAR *kcbar = (INTEL_KEYP_ROOT_COMPLEX_KCBAR *)port_context->mapped_kcbar_addr;
+    int num_stream_supported = kcbar->capabilities.num_stream_supported + 1;
+
+    for(i = 0; i < num_stream_supported; i++) {
+      INTEL_KEYP_STREAM_CONFIG_REG_BLOCK *stream_config_reg_block = (&kcbar->stream_config_reg_block) + i;
+      TEEIO_DEBUG((TEEIO_DEBUG_INFO, "%d: stream_config_reg_block.control = 0x%08x\n", i, stream_config_reg_block->control.raw));
+      if(stream_config_reg_block->control.en == 1 && stream_config_reg_block->control.stream_id == stream_id) {
+        *rp_stream_index = (uint8_t)i;
+        found = true;
+        break;
+      }
+    }
+
+    if(!found) {
+      TEEIO_DEBUG((TEEIO_DEBUG_ERROR, "Failed to find in-use Stream_x in KCBar for stream_id=%d.\n", stream_id));
+      return false;
+    } else {
+      TEEIO_DEBUG((TEEIO_DEBUG_INFO, "rp_stream_index = %d\n", *rp_stream_index));
+    }
+  }
+
+  TEEIO_DEBUG((TEEIO_DEBUG_INFO, "ide_id = %d\n", *ide_id));
+
+  return true;
+}
+
 // Check if the PCIE Flit Mode is enabled on the given port context
 bool pcie_check_flit_mode_enabled(ide_common_test_port_context_t *port_context)
 {
@@ -589,7 +701,7 @@ bool populate_rid_assoc_reg_block(
     return true;
 }
 
-// If the device is 64-bit and bit3 (prefetchable bit) is set, then use_prefetchable registers
+// Use the prefetchable bridge window when the endpoint BAR0 is prefetchable.
 bool check_use_prefetchable(char* bdf)
 {
   TEEIO_DEBUG((TEEIO_DEBUG_INFO, "check_use_prefetchable at bdf=%s\n", bdf));
@@ -602,14 +714,11 @@ bool check_use_prefetchable(char* bdf)
   bool use_prefetchable = false;
 
   uint32_t  bar0 = device_pci_read_32(PCIE_BAR0_OFFSET, fd);
-  if((bar0 & PCIE_MEM_BASE_ADDR_MASK) == PCIE_MEM_BASE_ADDR_64) {
-    // check bit 3
-    if((bar0 & PCIE_MEM_BASE_PREFETCHABLE_MASK) != 0) {
-      use_prefetchable = true;
-    }
+  if((bar0 & PCIE_MEM_BASE_PREFETCHABLE_MASK) != 0) {
+    use_prefetchable = true;
   }
 
-  TEEIO_DEBUG((TEEIO_DEBUG_INFO, "Device bar0 is 0x%08x, use_prefetchable = %d\n", bar0, use_prefetchable));
+  TEEIO_DEBUG((TEEIO_DEBUG_INFO, "Endpoint bar0 is 0x%08x, use_prefetchable = %d\n", bar0, use_prefetchable));
 
   close(fd);
 
@@ -655,6 +764,19 @@ bool populate_addr_assoc_reg_block(
     if(use_prefetch_memory) {
         addr_assoc2.mem_limit_upper = device_pci_read_32(PREFETCH_MEMORY_LIMIT_UPPER_OFFSET, cfg_space_fd);
         addr_assoc3.mem_base_upper = device_pci_read_32(PREFETCH_MEMORY_BASE_UPPER_OFFSET, cfg_space_fd);
+    }
+
+    uint64_t memory_base_addr = ((uint64_t)addr_assoc3.mem_base_upper << 32) |
+                                ((uint64_t)memory_base << 20);
+    uint64_t memory_limit_addr = ((uint64_t)addr_assoc2.mem_limit_upper << 32) |
+                                 ((uint64_t)memory_limit << 20) | 0xfffff;
+    if(memory_base_addr > memory_limit_addr) {
+        TEEIO_DEBUG((TEEIO_DEBUG_ERROR,
+                     "Invalid %s bridge memory window at bdf=%s: base=0x%lx limit=0x%lx\n",
+                     use_prefetch_memory ? "prefetchable" : "non-prefetchable",
+                     bdf, memory_base_addr, memory_limit_addr));
+        close(cfg_space_fd);
+        return false;
     }
 
     addr_assoc_reg_block->addr_assoc2.raw = addr_assoc2.raw;
@@ -751,16 +873,27 @@ bool init_root_port(pcie_ide_test_group_context_t *group_context)
   }
 
   // then set the rp_stream_index/ide_id/slot_id
-  if(check_stream_id_used_in_rootport(group_context->common.top->stream_id, port_context)) {
-    TEEIO_DEBUG((TEEIO_DEBUG_ERROR, "stream_id (%d) is already used.\n", group_context->common.top->stream_id));
-    goto InitHostFail;
-  }
   group_context->stream_id = group_context->common.top->stream_id;
 
   uint8_t rp_stream_index = 0;
   uint8_t ide_id = 0;
-  if(!find_free_rp_stream_index_and_ide_id(port_context, &rp_stream_index, &ide_id, group_context->common.top->type, true)) {
-    goto InitHostFail;
+
+  if(g_reuse_ide_stream) {
+    // Teardown mode: find the existing active IDE stream instead of a free one
+    TEEIO_DEBUG((TEEIO_DEBUG_INFO, "Teardown mode: looking for in-use IDE stream with stream_id=%d\n", group_context->stream_id));
+    if(!find_in_use_rp_stream_index_and_ide_id(port_context, &rp_stream_index, &ide_id, group_context->common.top->type, true, group_context->stream_id)) {
+      goto InitHostFail;
+    }
+  } else {
+    // Normal mode: check stream_id is not already in use, then find a free stream
+    if(check_stream_id_used_in_rootport(group_context->common.top->stream_id, port_context)) {
+      TEEIO_DEBUG((TEEIO_DEBUG_ERROR, "stream_id (%d) is already used.\n", group_context->common.top->stream_id));
+      goto InitHostFail;
+    }
+
+    if(!find_free_rp_stream_index_and_ide_id(port_context, &rp_stream_index, &ide_id, group_context->common.top->type, true)) {
+      goto InitHostFail;
+    }
   }
 
   TEEIO_DEBUG((TEEIO_DEBUG_INFO, "Host ide_id=%d, rp_stream_index=%d\n", ide_id, rp_stream_index));
@@ -808,7 +941,7 @@ bool init_root_port(pcie_ide_test_group_context_t *group_context)
     dev_bdf = port_context->port->bdf;
   }
 
-  bool use_prefetch_memory = check_use_prefetchable(dev_bdf);
+  bool use_prefetch_memory = check_use_prefetchable(lower_port_context->port->bdf);
   if(!populate_addr_assoc_reg_block(dev_bdf, use_prefetch_memory, &port_context->addr_assoc_reg_block)) {
     goto InitHostFail;
   }
@@ -817,9 +950,11 @@ bool init_root_port(pcie_ide_test_group_context_t *group_context)
   dump_rid_assoc_reg_block(&port_context->rid_assoc_reg_block);
   dump_addr_assoc_reg_block(&port_context->addr_assoc_reg_block);
 
-  // allocate key/iv slots
-  if(!pcie_ide_alloc_slot_ids(port_context, group_context->rp_stream_index, &group_context->k_set)) {
-    goto InitHostFail;
+  // allocate key/iv slots (skip in teardown mode - no new keys needed)
+  if(!g_reuse_ide_stream) {
+    if(!pcie_ide_alloc_slot_ids(port_context, group_context->rp_stream_index, &group_context->k_set)) {
+      goto InitHostFail;
+    }
   }
 
   return true;
@@ -961,8 +1096,16 @@ bool init_dev_port(pcie_ide_test_group_context_t *group_context)
 
   // ide_id
   uint8_t ide_id = 0;
-  if(!find_free_rp_stream_index_and_ide_id(port_context, NULL, &ide_id, top_type, false)) {
-    goto InitDevFailed;
+  if(g_reuse_ide_stream) {
+    // Teardown mode: find the existing active IDE stream on device side
+    TEEIO_DEBUG((TEEIO_DEBUG_INFO, "Teardown mode: looking for in-use IDE stream on device\n"));
+    if(!find_in_use_rp_stream_index_and_ide_id(port_context, NULL, &ide_id, top_type, false, group_context->common.top->stream_id)) {
+      goto InitDevFailed;
+    }
+  } else {
+    if(!find_free_rp_stream_index_and_ide_id(port_context, NULL, &ide_id, top_type, false)) {
+      goto InitDevFailed;
+    }
   }
   TEEIO_DEBUG((TEEIO_DEBUG_INFO, "Device ide_id = %d\n", ide_id));
   port_context->ide_id = ide_id;
@@ -1094,6 +1237,43 @@ bool set_sel_ide_for_cfg_req_in_ecap(
     return true;
 }
 
+bool set_tee_limited_in_ecap(
+    int fd,
+    TEST_IDE_TYPE ide_type,
+    uint8_t ide_id,
+    uint32_t ide_ecap_offset,
+    bool enable
+)
+{
+    if(ide_type != TEST_IDE_TYPE_SEL_IDE) {
+        TEEIO_DEBUG((TEEIO_DEBUG_ERROR,
+                     "TEE-Limited mode requires Selective IDE.\n"));
+        return false;
+    }
+
+    uint32_t offset = get_ide_reg_block_offset(
+        fd, ide_type, ide_id, ide_ecap_offset) + 4;
+    PCIE_SEL_IDE_STREAM_CTRL ide_stream_ctrl = {
+        .raw = device_pci_read_32(offset, fd)
+    };
+
+    ide_stream_ctrl.tee_limited_stream = enable ? 1 : 0;
+    device_pci_write_32(offset, ide_stream_ctrl.raw, fd);
+
+    ide_stream_ctrl.raw = device_pci_read_32(offset, fd);
+    if(ide_stream_ctrl.tee_limited_stream != (enable ? 1 : 0)) {
+        TEEIO_DEBUG((TEEIO_DEBUG_ERROR,
+                     "TEE-Limited readback failed: expected=%d actual=0x%08x\n",
+                     enable ? 1 : 0, ide_stream_ctrl.raw));
+        return false;
+    }
+
+    TEEIO_DEBUG((TEEIO_DEBUG_INFO,
+                 "TEE-Limited readback: enabled=%d stream_ctrl=0x%08x\n",
+                 enable ? 1 : 0, ide_stream_ctrl.raw));
+    return true;
+}
+
 /**
  * read ide_stream_ctrl register in ecap
 */
@@ -1201,7 +1381,7 @@ bool reset_ide_registers(
       port_context->addr_assoc_reg_block.addr_assoc3);
 }
 
-void prime_rp_ide_key_set(
+bool prime_rp_ide_key_set(
     INTEL_KEYP_ROOT_COMPLEX_KCBAR *const kcbar_ptr,
     const uint8_t rp_stream_index,
     const uint8_t direction,
@@ -1240,17 +1420,39 @@ void prime_rp_ide_key_set(
       ctrl_reg_names[direction],
       stream_txrx_control.raw));
 
-    // check if ready_key_set_x is 1 after prime
-    uint32_t data32 = mmio_read_reg32(status_reg_ptr);
-    INTEL_KEYP_STREAM_TXRX_STATUS txrx_status = {.raw = data32};
-    if (key_set_select == PCIE_IDE_STREAM_KS0) {
-        TEEIO_DEBUG((TEEIO_DEBUG_INFO, "ready_key_set_0 = %d\n", txrx_status.common.ready_key_set_0));
-    } else if (key_set_select == PCIE_IDE_STREAM_KS1) {
-        TEEIO_DEBUG((TEEIO_DEBUG_INFO, "ready_key_set_1 = %d\n", txrx_status.common.ready_key_set_1));
+    for (uint32_t poll = 0; poll < IDE_KCBAR_READY_POLL_COUNT; poll++) {
+        INTEL_KEYP_STREAM_TXRX_STATUS txrx_status = {
+            .raw = mmio_read_reg32(status_reg_ptr)
+        };
+        bool ready = key_set_select == PCIE_IDE_STREAM_KS0 ?
+            txrx_status.common.ready_key_set_0 :
+            txrx_status.common.ready_key_set_1;
+
+        if (ready) {
+            TEEIO_DEBUG((TEEIO_DEBUG_INFO,
+                         "Root port %s %s ready after %u poll(s): status=0x%08x\n",
+                         direct_names[direction], ks_names[key_set_select],
+                         poll + 1, txrx_status.raw));
+            return true;
+        }
+        libspdm_sleep(IDE_KCBAR_READY_POLL_INTERVAL_US);
     }
+
+    INTEL_KEYP_STREAM_TXRX_CONTROL final_control = {
+        .raw = mmio_read_reg32(ctrl_reg_ptr)
+    };
+    INTEL_KEYP_STREAM_TXRX_STATUS final_status = {
+        .raw = mmio_read_reg32(status_reg_ptr)
+    };
+    TEEIO_DEBUG((TEEIO_DEBUG_WARN,
+                 "Root port %s %s Ready did not assert after %u polls; continuing because this status is not implemented on all platforms: control=0x%08x status=0x%08x\n",
+                 direct_names[direction], ks_names[key_set_select],
+                 IDE_KCBAR_READY_POLL_COUNT,
+                 final_control.raw, final_status.raw));
+    return true;
 }
 
-void set_rp_ide_key_set_select(
+bool set_rp_ide_key_set_select(
     INTEL_KEYP_ROOT_COMPLEX_KCBAR *const kcbar_ptr,
     const uint8_t rp_stream_index,
     const uint8_t key_set_select)
@@ -1271,7 +1473,25 @@ void set_rp_ide_key_set_select(
     {
         TEEIO_ASSERT(false);
     }
+    uint32_t expected_select =
+        stream_txrx_control.stream_tx_control.key_set_select;
     mmio_write_reg32(ctrl_reg_ptr, stream_txrx_control.raw);
+    stream_txrx_control.raw = mmio_read_reg32(ctrl_reg_ptr);
+    if (stream_txrx_control.stream_tx_control.key_set_select !=
+        expected_select) {
+        TEEIO_DEBUG((TEEIO_DEBUG_ERROR,
+                     "Root port key-set select readback mismatch: expected_select=%u actual_select=%u raw=0x%08x\n",
+                     expected_select,
+                     stream_txrx_control.stream_tx_control.key_set_select,
+                     stream_txrx_control.raw));
+        return false;
+    }
+
+    TEEIO_DEBUG((TEEIO_DEBUG_INFO,
+                 "Root port key-set select readback: select=%u raw=0x%08x\n",
+                 stream_txrx_control.stream_tx_control.key_set_select,
+                 stream_txrx_control.raw));
+    return true;
 }
 
 bool enable_ide_stream_in_ecap(int cfg_space_fd, uint32_t ecap_offset, TEST_IDE_TYPE ide_type, uint8_t ide_id, bool enable){
@@ -1292,15 +1512,50 @@ bool enable_ide_stream_in_ecap(int cfg_space_fd, uint32_t ecap_offset, TEST_IDE_
 
     device_pci_write_32(offset, data, cfg_space_fd);
 
+    uint32_t actual = device_pci_read_32(offset, cfg_space_fd);
+    if ((actual & IDE_STREAM_CTRL_ENABLE) !=
+        (data & IDE_STREAM_CTRL_ENABLE)) {
+      TEEIO_DEBUG((TEEIO_DEBUG_ERROR,
+                   "IDE Stream Control enable readback mismatch: expected=0x%x actual=0x%x\n",
+                   data, actual));
+      return false;
+    }
+
+    TEEIO_DEBUG((TEEIO_DEBUG_INFO,
+                 "IDE Stream Control enable readback: expected_enable=%u actual=0x%x\n",
+                 enable ? 1 : 0, actual));
     return true;
 }
 
 // enable root port ide stream
-void enable_rootport_ide_stream(int cfg_space_fd, uint32_t ecap_offset, TEST_IDE_TYPE ide_type, uint8_t ide_id, uint8_t *kcbar_addr, uint8_t rp_stream_index, bool enable)
+bool enable_rootport_ide_stream(int cfg_space_fd, uint32_t ecap_offset, TEST_IDE_TYPE ide_type, uint8_t ide_id, uint8_t *kcbar_addr, uint8_t rp_stream_index, bool enable)
 {
-    enable_ide_stream_in_kcbar((INTEL_KEYP_ROOT_COMPLEX_KCBAR *)kcbar_addr, rp_stream_index, enable);
+    INTEL_KEYP_ROOT_COMPLEX_KCBAR *kcbar =
+        (INTEL_KEYP_ROOT_COMPLEX_KCBAR *)kcbar_addr;
+    INTEL_KEYP_STREAM_CONFIG_REG_BLOCK *stream_cfg =
+        get_stream_cfg_reg_block(kcbar, rp_stream_index);
+    INTEL_KEYP_STREAM_CONTROL before = {
+        .raw = mmio_read_reg32(&stream_cfg->control)
+    };
 
-    enable_ide_stream_in_ecap(cfg_space_fd, ecap_offset, ide_type, ide_id, enable);
+    enable_ide_stream_in_kcbar(kcbar, rp_stream_index, enable);
+
+    INTEL_KEYP_STREAM_CONTROL actual = {
+        .raw = mmio_read_reg32(&stream_cfg->control)
+    };
+    if (actual.en != (enable ? 1 : 0) ||
+        actual.stream_id != before.stream_id) {
+        TEEIO_DEBUG((TEEIO_DEBUG_ERROR,
+                     "Root port KCBAR stream control readback mismatch: expected_enable=%u expected_stream_id=%u actual=0x%08x\n",
+                     enable ? 1 : 0, before.stream_id, actual.raw));
+        return false;
+    }
+
+    TEEIO_DEBUG((TEEIO_DEBUG_INFO,
+                 "Root port KCBAR stream control readback: enable=%u stream_id=%u raw=0x%08x\n",
+                 actual.en, actual.stream_id, actual.raw));
+    return enable_ide_stream_in_ecap(
+        cfg_space_fd, ecap_offset, ide_type, ide_id, enable);
 }
 
 uint32_t read_stream_status_in_rp_ecap(int cfg_space_fd, uint32_t ecap_offset, TEST_IDE_TYPE ide_type, uint8_t ide_id)

@@ -20,6 +20,7 @@
 #include <industry_standard/pci_tdisp.h>
 
 bool g_pci_log = false;
+bool g_reuse_ide_stream = false;
 int g_top_id = 0;
 int g_config_id = 0;
 IDE_OPERATION g_ide_operation = IDE_OPERATION_LIST;

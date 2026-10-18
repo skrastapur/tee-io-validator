@@ -83,6 +83,8 @@ bool teeio_record_assertion_result(
   ide_run_test_case_result_t* case_result = g_current_case_result;
   if(case_result->class_id != case_class || case_result->case_id != case_id) {
     TEEIO_ASSERT(false);
+    TEEIO_DEBUG((TEEIO_DEBUG_WARN, "Assertion class/case mismatch: expected class=%d case=%d, got class=%d case=%d. Skipping assertion.\n",
+      case_result->class_id, case_result->case_id, case_class, case_id));
     return false;
   }
 

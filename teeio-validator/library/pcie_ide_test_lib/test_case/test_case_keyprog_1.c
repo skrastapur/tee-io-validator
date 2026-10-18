@@ -190,6 +190,7 @@ void pcie_ide_test_keyprog_1_run(void *test_context)
   bool result = libspdm_get_random_number(sizeof(key_buffer.key), (void *)key_buffer.key);
   TEEIO_ASSERT(result);
 
+  /* PCIe 6.3 Fig 6-58: IFV is two LE-32 DWORDs, DW1 then DW0. */
   key_buffer.iv[0] = 0;
   key_buffer.iv[1] = 1;
 

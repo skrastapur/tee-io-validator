@@ -80,8 +80,12 @@ static bool gen_teeio_spdm_test_case_from_responder_test_case(
   int max_val = 0;
   int i = 0;
 
+  // First pass: find max case_id and count entries
   common_test_case_t* ptr_responder = responder_spdm_test_case;
   while(ptr_responder->case_id != COMMON_TEST_ID_END) {
+    if(ptr_responder->case_id > max_val) {
+      max_val = ptr_responder->case_id;
+    }
     i++;
     ptr_responder = responder_spdm_test_case + i;
   }
@@ -91,22 +95,21 @@ static bool gen_teeio_spdm_test_case_from_responder_test_case(
     return false;
   }
 
-  ide_test_case_funcs_t* teeio_tc_funcs = (ide_test_case_funcs_t*)malloc(sizeof(ide_test_case_funcs_t) * i);
-  memset(teeio_tc_funcs, 0, sizeof(ide_test_case_funcs_t) * i);
+  // Allocate sparse array indexed by (case_id - 1) so that
+  // funcs[case_id - 1] maps directly to the correct test function,
+  // even when responder case_ids have gaps (e.g. 1,2,4,5,6,7,8).
+  ide_test_case_funcs_t* teeio_tc_funcs = (ide_test_case_funcs_t*)malloc(sizeof(ide_test_case_funcs_t) * max_val);
+  memset(teeio_tc_funcs, 0, sizeof(ide_test_case_funcs_t) * max_val);
 
   i = 0;
   ptr_responder = responder_spdm_test_case;
 
   while(ptr_responder->case_id != COMMON_TEST_ID_END) {
-    ide_test_case_funcs_t* ptr_teeio = teeio_tc_funcs + i;
+    ide_test_case_funcs_t* ptr_teeio = teeio_tc_funcs + (ptr_responder->case_id - 1);
     ptr_teeio->config_check_required = false;
     ptr_teeio->run = ptr_responder->case_func;
     ptr_teeio->setup = ptr_responder->case_setup_func;
     ptr_teeio->teardown = ptr_responder->case_teardown_func;
-
-    if(ptr_responder->case_id > max_val) {
-      max_val = ptr_responder->case_id;     
-    }
 
     if(buf_offset + strlen(buf) + 4 + 1 > sizeof(buf)) {
       TEEIO_ASSERT(false);

@@ -106,6 +106,20 @@ bool ide_km_key_prog(
       memset(key_buffer.key, fixed_key_byte, sizeof(key_buffer.key));
     }
 
+    /*
+     * PCIe 6.3 §6.33 requires K_SET_STOP before re-KEY_PROG on an
+     * already-programmed slot.  Prior test cases leave slots
+     * programmed (e.g. keyprog_1's teardown is empty), so unconditionally
+     * stop the slot first here.  Ignore any error status: on an
+     * unprogrammed slot the responder may reject, which is expected
+     * and harmless.
+     */
+    (void)pci_ide_km_key_set_stop(
+        pci_doe_context, spdm_context, session_id, stream_id,
+        k_sets[ks] | directions[direction] | substreams[substream],
+        port_index);
+
+    /* PCIe 6.3 Fig 6-58: IFV is two LE-32 DWORDs, DW1 then DW0. */
     key_buffer.iv[0] = 0;
     key_buffer.iv[1] = PCIE_IDE_IV_INIT_VALUE;
 
@@ -217,6 +231,15 @@ bool setup_ide_stream(void* doe_context, void* spdm_context,
   uint32_t upper_port_ecap_offset = upper_port->ecap_offset;
   int lower_port_cfg_space_fd = lower_port->cfg_space_fd;
   uint32_t lower_port_ecap_offset = lower_port->ecap_offset;
+  TEST_IDE_TYPE ide_type = TEST_IDE_TYPE_SEL_IDE;
+  if (top_type == IDE_TEST_TOPOLOGY_TYPE_LINK_IDE)
+  {
+    ide_type = TEST_IDE_TYPE_LNK_IDE;
+  }
+  else if(top_type == IDE_TEST_TOPOLOGY_TYPE_SEL_LINK_IDE)
+  {
+    NOT_IMPLEMENTED("selective_and_link_ide topoplogy");
+  }
 
   uint8_t dev_func_num;
   uint8_t bus_num;
@@ -280,11 +303,13 @@ bool setup_ide_stream(void* doe_context, void* spdm_context,
     return false;
   }
 
-  prime_rp_ide_key_set(
+  if (!prime_rp_ide_key_set(
       (INTEL_KEYP_ROOT_COMPLEX_KCBAR *)kcbar_addr,
       rp_stream_index,
       PCIE_IDE_STREAM_RX,
-      ks);
+      ks)) {
+    return false;
+  }
 
   result = ide_km_key_prog(
       doe_context, spdm_context,
@@ -322,11 +347,13 @@ bool setup_ide_stream(void* doe_context, void* spdm_context,
     return false;
   }
 
-  prime_rp_ide_key_set(
+  if (!prime_rp_ide_key_set(
       (INTEL_KEYP_ROOT_COMPLEX_KCBAR *)kcbar_addr,
       rp_stream_index,
       PCIE_IDE_STREAM_TX,
-      ks);
+      ks)) {
+    return false;
+  }
   
   if(skip_ksetgo) {
     return true;
@@ -362,9 +389,17 @@ bool setup_ide_stream(void* doe_context, void* spdm_context,
     return false;
   }
 
+  TEEIO_PRINT(("Root port IDE state after RX K_SET_GO:\n"));
+  dump_rootport_registers(
+      kcbar_addr, rp_stream_index,
+      upper_port_cfg_space_fd, upper_port->ide_id,
+      upper_port_ecap_offset, ide_type);
+
   // set key_set_select in host ide
   INTEL_KEYP_ROOT_COMPLEX_KCBAR *kcbar = (INTEL_KEYP_ROOT_COMPLEX_KCBAR *)kcbar_addr;
-  set_rp_ide_key_set_select(kcbar, rp_stream_index, ks);
+  if (!set_rp_ide_key_set_select(kcbar, rp_stream_index, ks)) {
+    return false;
+  }
 
   TEEIO_DEBUG((TEEIO_DEBUG_INFO, "KSetGo %s|TX|PR\n", k_set_names[ks]));
   status = ide_km_key_set_go(doe_context, spdm_context, session_id, stream_id,
@@ -395,24 +430,36 @@ bool setup_ide_stream(void* doe_context, void* spdm_context,
     return false;
   }
 
+  TEEIO_PRINT(("Root port IDE state after TX K_SET_GO:\n"));
+  dump_rootport_registers(
+      kcbar_addr, rp_stream_index,
+      upper_port_cfg_space_fd, upper_port->ide_id,
+      upper_port_ecap_offset, ide_type);
+
   // enable dev ide
-  TEST_IDE_TYPE ide_type = TEST_IDE_TYPE_SEL_IDE;
-  if (top_type == IDE_TEST_TOPOLOGY_TYPE_LINK_IDE)
-  {
-    ide_type = IDE_TEST_TOPOLOGY_TYPE_LINK_IDE;
+  if (!enable_ide_stream_in_ecap(
+          lower_port_cfg_space_fd, lower_port_ecap_offset,
+          ide_type, lower_port->ide_id, true)) {
+    return false;
   }
-  else if(top_type == IDE_TEST_TOPOLOGY_TYPE_SEL_LINK_IDE)
-  {
-    NOT_IMPLEMENTED("selective_and_link_ide topoplogy");
-  }
-  enable_ide_stream_in_ecap(lower_port_cfg_space_fd, lower_port_ecap_offset, ide_type, lower_port->ide_id, true);
 
   // enable host ide stream
-  enable_rootport_ide_stream(upper_port_cfg_space_fd,
-                         upper_port_ecap_offset,
-                         ide_type, upper_port->ide_id,
-                         kcbar_addr,
-                         rp_stream_index, true);
+  if (!enable_rootport_ide_stream(upper_port_cfg_space_fd,
+                                  upper_port_ecap_offset,
+                                  ide_type, upper_port->ide_id,
+                                  kcbar_addr,
+                                  rp_stream_index, true)) {
+    enable_ide_stream_in_ecap(
+        lower_port_cfg_space_fd, lower_port_ecap_offset,
+        ide_type, lower_port->ide_id, false);
+    return false;
+  }
+
+  TEEIO_PRINT(("Root port IDE state after stream enable:\n"));
+  dump_rootport_registers(
+      kcbar_addr, rp_stream_index,
+      upper_port_cfg_space_fd, upper_port->ide_id,
+      upper_port_ecap_offset, ide_type);
 
   // wait for 10 ms for device to get ide ready
   libspdm_sleep(10 * 1000);
@@ -497,7 +544,13 @@ bool ide_key_switch_to(void* doe_context, void* spdm_context,
     return false;
   }
 
-  prime_rp_ide_key_set((INTEL_KEYP_ROOT_COMPLEX_KCBAR *)kcbar_addr, rp_stream_index, PCIE_IDE_STREAM_RX, ks);
+  if (!prime_rp_ide_key_set(
+      (INTEL_KEYP_ROOT_COMPLEX_KCBAR *)kcbar_addr,
+      rp_stream_index,
+      PCIE_IDE_STREAM_RX,
+      ks)) {
+    return false;
+  }
 
   result = ide_km_key_prog(doe_context, spdm_context,session_id,
                            ks, PCIE_IDE_STREAM_TX, PCIE_IDE_SUB_STREAM_PR,
@@ -520,7 +573,13 @@ bool ide_key_switch_to(void* doe_context, void* spdm_context,
     return false;
   }
 
-  prime_rp_ide_key_set((INTEL_KEYP_ROOT_COMPLEX_KCBAR *)kcbar_addr, rp_stream_index, PCIE_IDE_STREAM_TX, ks);
+  if (!prime_rp_ide_key_set(
+      (INTEL_KEYP_ROOT_COMPLEX_KCBAR *)kcbar_addr,
+      rp_stream_index,
+      PCIE_IDE_STREAM_TX,
+      ks)) {
+    return false;
+  }
 
   if(skip_ksetgo) {
     return true;
@@ -558,7 +617,9 @@ bool ide_key_switch_to(void* doe_context, void* spdm_context,
 
   // set key_set_select in host ide
   INTEL_KEYP_ROOT_COMPLEX_KCBAR *kcbar = (INTEL_KEYP_ROOT_COMPLEX_KCBAR *)kcbar_addr;
-  set_rp_ide_key_set_select(kcbar, rp_stream_index, ks);
+  if (!set_rp_ide_key_set_select(kcbar, rp_stream_index, ks)) {
+    return false;
+  }
 
   TEEIO_DEBUG((TEEIO_DEBUG_INFO, "KSetGo %s|TX|PR\n", k_set_names[ks]));
   status = ide_km_key_set_go(doe_context, spdm_context, session_id, stream_id,

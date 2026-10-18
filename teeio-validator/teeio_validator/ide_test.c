@@ -43,6 +43,7 @@ ide_run_test_group_result_t* g_current_group_result = NULL;
 ide_run_test_case_result_t* g_current_case_result = NULL;
 
 extern const char *TEEIO_TEST_CATEGORY_NAMES[];
+extern bool g_no_teardown;
 teeio_test_funcs_t m_teeio_test_funcs[TEEIO_TEST_CATEGORY_MAX] = {
   // PCIE-IDE
   { 0 },
@@ -665,7 +666,7 @@ static bool do_run_test_config_check(ide_run_test_config_t *run_test_config, IDE
   return ret;
 }
 
-bool do_run_test_case(ide_run_test_case_t *test_case, ide_run_test_config_t *run_test_config, TEEIO_TEST_CATEGORY test_category, IDE_TEST_TOPOLOGY_TYPE top_type)
+bool do_run_test_case(ide_run_test_case_t *test_case, ide_run_test_config_t *run_test_config, TEEIO_TEST_CATEGORY test_category, IDE_TEST_TOPOLOGY_TYPE top_type, bool skip_teardown)
 {
   ide_common_test_case_context_t *case_context = (ide_common_test_case_context_t *)test_case->test_context;
   TEEIO_ASSERT(case_context->signature == CASE_CONTEXT_SIGNATURE);
@@ -724,11 +725,14 @@ bool do_run_test_case(ide_run_test_case_t *test_case, ide_run_test_config_t *run
 
 TestCaseDone:
 
-  if(test_case->teardown_func != NULL) {
-    test_case->teardown_func(context);
+  if(skip_teardown) {
+    TEEIO_DEBUG((TEEIO_DEBUG_INFO, "%s teardown skipped (-r no-teardown mode).\n", test_case->name));
+  } else {
+    if(test_case->teardown_func != NULL) {
+      test_case->teardown_func(context);
+    }
+    do_run_test_config_disable(run_test_config, top_type, test_category);
   }
-
-  do_run_test_config_disable(run_test_config, top_type, test_category);
 
   return true;
 }
@@ -736,7 +740,7 @@ TestCaseDone:
 /**
  * run_test_group
 */
-bool do_run_test_group(ide_run_test_group_t *run_test_group, ide_run_test_config_t *run_test_config, ide_run_test_group_result_t* group_result, TEEIO_TEST_CATEGORY test_category)
+bool do_run_test_group(ide_run_test_group_t *run_test_group, ide_run_test_config_t *run_test_config, ide_run_test_group_result_t* group_result, TEEIO_TEST_CATEGORY test_category, bool is_last_group)
 {
   teeio_common_test_group_context_t *group_context = (teeio_common_test_group_context_t *)run_test_group->test_context;
   TEEIO_ASSERT(group_context->signature == GROUP_CONTEXT_SIGNATURE);
@@ -769,9 +773,12 @@ bool do_run_test_group(ide_run_test_group_t *run_test_group, ide_run_test_config
     // alloc case_result
     g_current_case_result = alloc_run_test_case_result(group_result, test_case);
 
+    // In -r mode, skip teardown only for the last case of the last group
+    bool skip_case_teardown = (g_no_teardown && is_last_group && test_case->next == NULL);
+
     // run the test_case
     if(group_setup_result) {
-      do_run_test_case(test_case, run_test_config, test_category, top_type);
+      do_run_test_case(test_case, run_test_config, test_category, top_type, skip_case_teardown);
     }
 
     // next case
@@ -779,9 +786,14 @@ bool do_run_test_group(ide_run_test_group_t *run_test_group, ide_run_test_config
     g_current_case_result = NULL;
   }
 
+  // In -r mode, skip group teardown only for the last group
+  bool skip_group_teardown = (g_no_teardown && is_last_group);
+
   // call run_test_group's teardown function
-  if(group_setup_result) {
+  if(group_setup_result && !skip_group_teardown) {
     run_test_group->teardown_func(group_context);
+  } else if(skip_group_teardown) {
+    TEEIO_DEBUG((TEEIO_DEBUG_INFO, "TestGroup (%s) teardown skipped (-r no-teardown mode). IDE stream and TDI remain active.\n", run_test_group->name));
   }
 
   // config_context is reused between different run_group_test
@@ -868,7 +880,8 @@ bool do_run_test_suite(ide_run_test_suite_t *run_test_suite)
         g_current_group_result = alloc_run_test_group_result(run_test_group, g_current_config_result);
         TEEIO_ASSERT(g_current_group_result);
 
-        do_run_test_group(run_test_group, run_test_config, g_current_group_result, suite_context->test_category);
+        bool is_last_group = (run_test_group->next == NULL);
+        do_run_test_group(run_test_group, run_test_config, g_current_group_result, suite_context->test_category, is_last_group);
 
         run_test_group = run_test_group->next;
         g_current_group_result = NULL;
