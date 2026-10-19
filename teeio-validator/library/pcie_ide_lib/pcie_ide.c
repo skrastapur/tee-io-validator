@@ -11,6 +11,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <errno.h>
 #include <sys/mman.h>
 
 #include "teeio_validator.h"
@@ -40,6 +41,7 @@ extern bool g_reuse_ide_stream;
 #define LINK_IDE_REGISTER_BLOCK_SIZE (sizeof(PCIE_LNK_IDE_STREAM_CTRL) + sizeof(PCIE_LINK_IDE_STREAM_STATUS))
 #define IDE_KCBAR_READY_POLL_COUNT 1000
 #define IDE_KCBAR_READY_POLL_INTERVAL_US 1000
+#define IDE_ENABLE_READBACK_DELAY_MAX_MS 60000
 
 extern uint32_t g_doe_extended_offset;
 
@@ -1494,6 +1496,44 @@ bool set_rp_ide_key_set_select(
     return true;
 }
 
+static bool delay_link_ide_enable_readback(TEST_IDE_TYPE ide_type, bool enable)
+{
+    const char *delay_text;
+    char *end;
+    unsigned long delay_ms;
+
+    if (!enable || ide_type != TEST_IDE_TYPE_LNK_IDE) {
+        return true;
+    }
+
+    delay_text = getenv("TEEIO_IDE_ENABLE_READBACK_DELAY_MS");
+    if (delay_text == NULL || delay_text[0] == '\0') {
+        return true;
+    }
+
+    errno = 0;
+    end = NULL;
+    delay_ms = strtoul(delay_text, &end, 10);
+    if (errno != 0 || end == delay_text || *end != '\0' ||
+        delay_ms > IDE_ENABLE_READBACK_DELAY_MAX_MS) {
+        TEEIO_DEBUG((TEEIO_DEBUG_ERROR,
+                     "Invalid TEEIO_IDE_ENABLE_READBACK_DELAY_MS='%s' "
+                     "(expected 0-%u).\n",
+                     delay_text, IDE_ENABLE_READBACK_DELAY_MAX_MS));
+        return false;
+    }
+
+    if (delay_ms != 0) {
+        TEEIO_DEBUG((TEEIO_DEBUG_INFO,
+                     "Link IDE Stream Enable written; delaying endpoint "
+                     "control readback for %lu ms.\n",
+                     delay_ms));
+        libspdm_sleep((uint64_t)delay_ms * 1000);
+    }
+
+    return true;
+}
+
 bool enable_ide_stream_in_ecap(int cfg_space_fd, uint32_t ecap_offset, TEST_IDE_TYPE ide_type, uint8_t ide_id, bool enable){
     uint32_t data;
     uint32_t offset = get_ide_reg_block_offset(cfg_space_fd, ide_type, ide_id, ecap_offset);
@@ -1511,6 +1551,10 @@ bool enable_ide_stream_in_ecap(int cfg_space_fd, uint32_t ecap_offset, TEST_IDE_
     }
 
     device_pci_write_32(offset, data, cfg_space_fd);
+
+    if (!delay_link_ide_enable_readback(ide_type, enable)) {
+      return false;
+    }
 
     uint32_t actual = device_pci_read_32(offset, cfg_space_fd);
     if ((actual & IDE_STREAM_CTRL_ENABLE) !=
