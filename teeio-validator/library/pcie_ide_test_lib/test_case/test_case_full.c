@@ -172,7 +172,6 @@ static bool test_full_ide_km_key_set_stop(const void *pci_doe_context,
 
 bool pcie_ide_teardown_common(void *test_context, uint8_t ks)
 {
-  // first diable dev_ide and host_ide
   ide_common_test_case_context_t *case_context = (ide_common_test_case_context_t *)test_context;
   TEEIO_ASSERT(case_context);
   TEEIO_ASSERT(case_context->signature == CASE_CONTEXT_SIGNATURE);
@@ -197,23 +196,27 @@ bool pcie_ide_teardown_common(void *test_context, uint8_t ks)
     NOT_IMPLEMENTED("selective_and_link_ide topoplogy");
   }
 
-  enable_ide_stream_in_ecap(lower_port->cfg_space_fd, lower_port->ecap_offset, ide_type, lower_port->ide_id, false);
-
-  // disable host ide stream
-  enable_rootport_ide_stream(upper_port->cfg_space_fd,
-                         upper_port->ecap_offset,
-                         ide_type, upper_port->ide_id,
-                         upper_port->mapped_kcbar_addr,
-                         group_context->rp_stream_index, false);
-
   void* doe_context = group_context->spdm_doe.doe_context;
   void* spdm_context = group_context->spdm_doe.spdm_context;
   uint32_t session_id = group_context->spdm_doe.session_id;
   uint8_t stream_id = group_context->stream_id;
   uint8_t port_index = group_context->common.lower_port.port->port_index;
-  bool res = false;
+  bool res;
 
-  // then test KSetStop  
+  /*
+   * Stop host transmission before invalidating endpoint keys. Disabling the
+   * endpoint first sends an IDE Fail message while the host stream is active,
+   * which can take down the link before K_SET_STOP completes over DOE.
+   */
+  res = enable_rootport_ide_stream(upper_port->cfg_space_fd,
+                         upper_port->ecap_offset,
+                         ide_type, upper_port->ide_id,
+                         upper_port->mapped_kcbar_addr,
+                         group_context->rp_stream_index, false);
+  if (!res) {
+    goto TestFullTeardownDone;
+  }
+
   TEEIO_DEBUG((TEEIO_DEBUG_INFO, "[idetest]       Test KSetStop %s|RX|PR\n", k_set_names[ks]));
   res = test_full_ide_km_key_set_stop(doe_context, spdm_context, &session_id, stream_id,
                              ks | PCI_IDE_KM_KEY_DIRECTION_RX | PCI_IDE_KM_KEY_SUB_STREAM_PR, port_index);
@@ -254,8 +257,9 @@ bool pcie_ide_teardown_common(void *test_context, uint8_t ks)
                              ks | PCI_IDE_KM_KEY_DIRECTION_TX | PCI_IDE_KM_KEY_SUB_STREAM_CPL, port_index);
 
 TestFullTeardownDone:
-
-  return res;
+  return enable_ide_stream_in_ecap(lower_port->cfg_space_fd,
+                                  lower_port->ecap_offset, ide_type,
+                                  lower_port->ide_id, false) && res;
 }
 
 void pcie_ide_test_full_1_teardown(void *test_context)
