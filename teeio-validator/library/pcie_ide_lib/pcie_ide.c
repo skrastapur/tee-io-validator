@@ -902,6 +902,12 @@ bool init_root_port(pcie_ide_test_group_context_t *group_context)
   group_context->rp_stream_index = rp_stream_index;
   port_context->ide_id = ide_id;
 
+  if(g_reuse_ide_stream) {
+    TEEIO_DEBUG((TEEIO_DEBUG_INFO,
+                 "Teardown mode: skip association discovery and key slot allocation.\n"));
+    return true;
+  }
+
   // rid & addr assoc_reg_block
   ide_common_test_port_context_t *lower_port_context = &group_context->common.lower_port;
   uint16_t segment = 0;
@@ -952,11 +958,8 @@ bool init_root_port(pcie_ide_test_group_context_t *group_context)
   dump_rid_assoc_reg_block(&port_context->rid_assoc_reg_block);
   dump_addr_assoc_reg_block(&port_context->addr_assoc_reg_block);
 
-  // allocate key/iv slots (skip in teardown mode - no new keys needed)
-  if(!g_reuse_ide_stream) {
-    if(!pcie_ide_alloc_slot_ids(port_context, group_context->rp_stream_index, &group_context->k_set)) {
-      goto InitHostFail;
-    }
+  if(!pcie_ide_alloc_slot_ids(port_context, group_context->rp_stream_index, &group_context->k_set)) {
+    goto InitHostFail;
   }
 
   return true;
