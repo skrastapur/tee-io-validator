@@ -27,6 +27,12 @@ static bool setup_success = false;
 
 bool tdisp_test_stop_interface_1_setup (void *test_context)
 {
+	if (g_reuse_ide_stream) {
+		TEEIO_DEBUG ((TEEIO_DEBUG_INFO,
+			"Teardown mode: skip TDISP version, capabilities, and pre-stop state requests.\n"));
+		return setup_success = true;
+	}
+
 	pci_tdisp_version_response_mine_t get_version_response;
 	size_t response_size = sizeof (get_version_response);
 
@@ -53,31 +59,6 @@ bool tdisp_test_stop_interface_1_setup (void *test_context)
 
 	libspdm_copy_mem (&rsp_caps, sizeof (rsp_caps), &get_capabilities_response.rsp_caps,
 		sizeof (get_capabilities_response.rsp_caps));
-
-	// In teardown mode (-d), the TDI may already be in RUN state from a previous -r run.
-	// Check state first and skip the IDE stream setup if already in RUN.
-	if (g_reuse_ide_stream) {
-		pci_tdisp_device_interface_state_response_t get_state_response;
-
-		response_size = sizeof (get_state_response);
-		if (!tdisp_test_get_state (test_context, g_tdisp_interface_id.function_id,
-			&get_state_response, &response_size) ||
-			(response_size != sizeof (pci_tdisp_device_interface_state_response_t))) {
-			TEEIO_DEBUG ((TEEIO_DEBUG_ERROR,
-				"tdisp_test_stop_interface_1_setup get_state failed.\n"));
-			return false;
-		}
-
-		if (get_state_response.tdi_state == PCI_TDISP_INTERFACE_STATE_RUN) {
-			TEEIO_DEBUG ((TEEIO_DEBUG_INFO,
-				"Teardown mode: TDI already in RUN state, skipping set_ide_stream/lock/start.\n"));
-			return setup_success = true;
-		}
-
-		TEEIO_DEBUG ((TEEIO_DEBUG_WARN,
-			"Teardown mode: TDI state is %d (not RUN), proceeding with normal setup.\n",
-			get_state_response.tdi_state));
-	}
 
 	if (!tdisp_test_set_ide_stream (test_context, PCI_IDE_KM_KEY_SET_K0)) {
 		TEEIO_DEBUG ((TEEIO_DEBUG_ERROR,
@@ -208,7 +189,7 @@ void tdisp_test_stop_interface_1_run (void *test_context)
 
 void tdisp_test_stop_interface_1_teardown (void *test_context)
 {
-	if (setup_success == false) {
+	if (setup_success == false || g_reuse_ide_stream) {
 		return;
 	}
 

@@ -1115,6 +1115,12 @@ bool init_dev_port(pcie_ide_test_group_context_t *group_context)
   TEEIO_DEBUG((TEEIO_DEBUG_INFO, "Device ide_id = %d\n", ide_id));
   port_context->ide_id = ide_id;
 
+  if(g_reuse_ide_stream) {
+    TEEIO_DEBUG((TEEIO_DEBUG_INFO,
+                 "Teardown mode: skip endpoint association and flit-mode setup.\n"));
+    return true;
+  }
+
   // rid&addr assoc_reg_block
   port_context->rid_assoc_reg_block.rid_assoc1.raw = m_rid_assoc_reg_block.rid_assoc1.raw;
   port_context->rid_assoc_reg_block.rid_assoc2.raw = m_rid_assoc_reg_block.rid_assoc2.raw;
