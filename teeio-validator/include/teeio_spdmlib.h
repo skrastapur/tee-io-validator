@@ -35,6 +35,11 @@ void *spdm_client_init(void);
 bool spdm_connect (void *spdm_context, uint32_t *session_id);
 
 /**
+ * setup the authenticated SPDM session needed for teardown requests
+ */
+bool spdm_connect_for_teardown(void *spdm_context, uint32_t *session_id);
+
+/**
  * stop spdm connection
 */
 bool spdm_stop(void *spdm_context, uint32_t session_id);

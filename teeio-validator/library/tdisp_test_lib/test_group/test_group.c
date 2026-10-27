@@ -12,9 +12,12 @@ bool init_dev_port (void *context);
 bool init_root_port (void *context);
 void* spdm_client_init ();
 bool spdm_connect (void *spdm_context, uint32_t *session_id);
+bool spdm_connect_for_teardown(void *spdm_context, uint32_t *session_id);
 bool spdm_stop (void *spdm_context, uint32_t session_id);
 void close_dev_port (ide_common_test_port_context_t *port, IDE_TEST_TOPOLOGY_TYPE type);
 void close_root_port (void *context);
+
+extern bool g_reuse_ide_stream;
 
 /**
  * This function works to setup selective_ide and link_ide
@@ -67,7 +70,9 @@ static bool common_test_group_setup (void *test_context)
 
 	uint32_t session_id = 0;
 
-	ret = spdm_connect (spdm_context, &session_id);
+	ret = g_reuse_ide_stream ?
+	      spdm_connect_for_teardown(spdm_context, &session_id) :
+	      spdm_connect(spdm_context, &session_id);
 	TEEIO_ASSERT (ret);
 
 	context->spdm_doe.spdm_context = spdm_context;

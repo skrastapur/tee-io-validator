@@ -22,6 +22,8 @@
 #include "library/pci_ide_km_common_lib.h"
 #include "library/pci_ide_km_requester_lib.h"
 
+extern bool g_reuse_ide_stream;
+
 bool scan_devices(void *test_context)
 {
   bool ret = false;
@@ -165,7 +167,10 @@ static bool common_test_group_setup(void *test_context)
   }
 
   uint32_t session_id = 0;
-  if(!spdm_connect(spdm_context, &session_id)) {
+  bool connected = g_reuse_ide_stream ?
+                   spdm_connect_for_teardown(spdm_context, &session_id) :
+                   spdm_connect(spdm_context, &session_id);
+  if(!connected) {
     teeio_record_group_result(TEEIO_TEST_GROUP_FUNC_SETUP, TEEIO_TEST_RESULT_FAILED, "Spdm connect failed.");
     return false;
   }
