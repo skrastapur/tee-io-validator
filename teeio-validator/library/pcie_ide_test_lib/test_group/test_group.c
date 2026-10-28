@@ -87,6 +87,7 @@ bool ide_query_port_index(void *test_context)
       target_bus == bus && target_segment == segment) {
     context->common.lower_port.port->port_index = port_index;
     TEEIO_DEBUG((TEEIO_DEBUG_INFO, "Found matching port_index=%d for lower_port\n", port_index));
+    TEEIO_PRINT(("Teardown state: port_index=%u\n", port_index));
     found = true;
   } else if (max_port_index > 0) {
     for (port_index = 1; port_index < max_port_index + 1; port_index++) {
@@ -107,7 +108,9 @@ bool ide_query_port_index(void *test_context)
           target_bus == bus && target_segment == segment) {
         context->common.lower_port.port->port_index = port_index;
         TEEIO_DEBUG((TEEIO_DEBUG_INFO, "Found matching port_index=%d for lower_port\n", port_index));
+        TEEIO_PRINT(("Teardown state: port_index=%u\n", port_index));
         found = true;
+        break;
       }
     }
   }
@@ -178,9 +181,17 @@ static bool common_test_group_setup(void *test_context)
   context->spdm_doe.spdm_context = spdm_context;
   context->spdm_doe.session_id = session_id;
 
-  if (!ide_query_port_index(test_context)) {
-    teeio_record_group_result(TEEIO_TEST_GROUP_FUNC_SETUP, TEEIO_TEST_RESULT_FAILED, "Query port_index for lower_port failed.");
-    return false;
+  if (g_reuse_ide_stream && context->common.top->port_index_valid) {
+    context->common.lower_port.port->port_index =
+        context->common.top->port_index;
+    TEEIO_DEBUG((TEEIO_DEBUG_INFO,
+                 "Using persisted port_index=%u for IDE teardown\n",
+                 context->common.top->port_index));
+  } else {
+    if (!ide_query_port_index(test_context)) {
+      teeio_record_group_result(TEEIO_TEST_GROUP_FUNC_SETUP, TEEIO_TEST_RESULT_FAILED, "Query port_index for lower_port failed.");
+      return false;
+    }
   }
 
   teeio_record_group_result(TEEIO_TEST_GROUP_FUNC_SETUP, TEEIO_TEST_RESULT_PASS, "");

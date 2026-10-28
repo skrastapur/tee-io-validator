@@ -2138,6 +2138,21 @@ bool ParseTopologySection(void *context, IDE_TEST_CONFIG *test_config, int index
   }
   topology->stream_id = data32;
 
+  // optional port_index, used to avoid repeating IDE-KM QUERY during teardown
+  sprintf(entry_name, "port_index");
+  if (GetDecimalUint32FromDataFile(context, (uint8_t *)section_name,
+                                   (uint8_t *)entry_name, &data32))
+  {
+    if (data32 > 0xff) {
+      TEEIO_DEBUG((TEEIO_DEBUG_ERROR,
+                   "[%s] port_index(%d) shall be in [0, 255].\n",
+                   section_name, data32));
+      return false;
+    }
+    topology->port_index_valid = true;
+    topology->port_index = (uint8_t)data32;
+  }
+
   // optional tdisp_function_id
   sprintf(entry_name, "tdisp_function_id");
   if (GetHexUint32FromDataFile(context, (uint8_t *)section_name, (uint8_t *)entry_name, &data32))
@@ -2415,6 +2430,9 @@ void dump_test_config(IDE_TEST_CONFIG *test_config)
     TEEIO_DEBUG((TEEIO_DEBUG_VERBOSE, "  upper     = %s\n", get_port_by_id(test_config, top->upper_port)->port_name));
     TEEIO_DEBUG((TEEIO_DEBUG_VERBOSE, "  lower     = %s\n", get_port_by_id(test_config, top->lower_port)->port_name));
     TEEIO_DEBUG((TEEIO_DEBUG_VERBOSE, "  stream_id = %d\n", top->stream_id));
+    if (top->port_index_valid) {
+      TEEIO_DEBUG((TEEIO_DEBUG_VERBOSE, "  port_index = %d\n", top->port_index));
+    }
     if(top->connection == IDE_TEST_CONNECT_DIRECT) {
       TEEIO_DEBUG((TEEIO_DEBUG_VERBOSE, "  path1     = %s,%s\n", get_port_by_id(test_config, top->root_port)->port_name,
                                                                      get_port_by_id(test_config, top->lower_port)->port_name));
