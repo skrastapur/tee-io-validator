@@ -11,7 +11,6 @@
 #include "industry_standard/pci_idekm.h"
 
 extern pci_tdisp_interface_id_t g_tdisp_interface_id;
-extern bool g_reuse_ide_stream;
 
 static const char *mAssertion[] = {
 	"tdisp_send_receive_data",
@@ -27,12 +26,6 @@ static bool setup_success = false;
 
 bool tdisp_test_stop_interface_1_setup (void *test_context)
 {
-	if (g_reuse_ide_stream) {
-		TEEIO_DEBUG ((TEEIO_DEBUG_INFO,
-			"Teardown mode: skip TDISP version, capabilities, and pre-stop state requests.\n"));
-		return setup_success = true;
-	}
-
 	pci_tdisp_version_response_mine_t get_version_response;
 	size_t response_size = sizeof (get_version_response);
 
@@ -189,7 +182,7 @@ void tdisp_test_stop_interface_1_run (void *test_context)
 
 void tdisp_test_stop_interface_1_teardown (void *test_context)
 {
-	if (setup_success == false || g_reuse_ide_stream) {
+	if (setup_success == false) {
 		return;
 	}
 

@@ -153,7 +153,7 @@ bool reset_ide_registers(
 /*
  * set prime_key_set_0/1 in stream_txrx_ctrl
 */
-bool prime_rp_ide_key_set(
+void prime_rp_ide_key_set(
     INTEL_KEYP_ROOT_COMPLEX_KCBAR *const kcbar_ptr,
     const uint8_t rp_stream_index,
     const uint8_t direction,
@@ -162,7 +162,7 @@ bool prime_rp_ide_key_set(
 /**
  * set stream_txrx_control.stream_tx_control.key_set_select
 */
-bool set_rp_ide_key_set_select(
+void set_rp_ide_key_set_select(
     INTEL_KEYP_ROOT_COMPLEX_KCBAR *const kcbar_ptr,
     const uint8_t rp_stream_index,
     const uint8_t key_set_select);
@@ -228,7 +228,7 @@ bool pcie_ide_alloc_slot_ids(
  * enable rootport ide stream.
  * It will set registers in both PCIE ecap and Intel KCBAR.
 */
-bool enable_rootport_ide_stream(
+void enable_rootport_ide_stream(
     int cfg_space_fd,
     uint32_t ecap_offset,
     TEST_IDE_TYPE ide_type,

@@ -24,7 +24,6 @@
 
 extern const char *k_set_names[];
 extern bool g_no_teardown;
-extern bool g_reuse_ide_stream;
 
 bool pcie_ide_test_full_1_setup(void *test_context)
 {
@@ -38,10 +37,6 @@ bool pcie_ide_test_full_1_setup(void *test_context)
 
   ide_common_test_port_context_t* upper_port = &group_context->common.upper_port;
   ide_common_test_port_context_t* lower_port = &group_context->common.lower_port;
-
-  if (g_reuse_ide_stream) {
-    return true;
-  }
 
   return setup_ide_stream(group_context->spdm_doe.doe_context, group_context->spdm_doe.spdm_context, &group_context->spdm_doe.session_id,
                           upper_port->mapped_kcbar_addr, group_context->stream_id, PCI_IDE_KM_KEY_SET_K0,
@@ -64,10 +59,6 @@ void pcie_ide_test_full_1_run(void *test_context)
   pcie_ide_test_group_context_t *group_context = (pcie_ide_test_group_context_t *)case_context->group_context;
   TEEIO_ASSERT(group_context);
   TEEIO_ASSERT(group_context->common.signature == GROUP_CONTEXT_SIGNATURE);
-
-  if (g_reuse_ide_stream) {
-    return;
-  }
 
   TEST_IDE_TYPE ide_type = TEST_IDE_TYPE_SEL_IDE;
   if (group_context->common.top->type == IDE_TEST_TOPOLOGY_TYPE_LINK_IDE)
@@ -208,14 +199,11 @@ bool pcie_ide_teardown_common(void *test_context, uint8_t ks)
    * endpoint first sends an IDE Fail message while the host stream is active,
    * which can take down the link before K_SET_STOP completes over DOE.
    */
-  res = enable_rootport_ide_stream(upper_port->cfg_space_fd,
-                         upper_port->ecap_offset,
-                         ide_type, upper_port->ide_id,
-                         upper_port->mapped_kcbar_addr,
-                         group_context->rp_stream_index, false);
-  if (!res) {
-    goto TestFullTeardownDone;
-  }
+  enable_rootport_ide_stream(upper_port->cfg_space_fd,
+                             upper_port->ecap_offset,
+                             ide_type, upper_port->ide_id,
+                             upper_port->mapped_kcbar_addr,
+                             group_context->rp_stream_index, false);
 
   TEEIO_DEBUG((TEEIO_DEBUG_INFO, "[idetest]       Test KSetStop %s|RX|PR\n", k_set_names[ks]));
   res = test_full_ide_km_key_set_stop(doe_context, spdm_context, &session_id, stream_id,

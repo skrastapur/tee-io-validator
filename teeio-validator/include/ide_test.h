@@ -193,8 +193,6 @@ typedef struct {
   uint16_t segment;
   uint8_t bus;
   uint8_t stream_id;
-  bool port_index_valid;
-  uint8_t port_index;
 } IDE_TEST_TOPOLOGY;
 
 typedef struct {

@@ -40,7 +40,6 @@ extern uint8_t g_scan_bus;
 extern bool g_run_test_suite;
 extern bool g_teeio_fixed_key;
 extern bool g_no_teardown;
-extern bool g_reuse_ide_stream;
 extern int g_test_interval;
 extern int g_test_rounds;
 
@@ -64,7 +63,6 @@ void print_usage()
   TEEIO_PRINT(("  -n <test_rounds>    : test rounds of a case.\n"));
   TEEIO_PRINT(("  -k                  : Use fixed IDE Key for debug purpose.\n"));
   TEEIO_PRINT(("  -r                  : Run-only mode. Skip teardown to keep IDE stream secure and TDI in RUN state.\n"));
-  TEEIO_PRINT(("  -d                  : Teardown mode. Reuse existing active IDE stream for teardown-only operation.\n"));
   TEEIO_PRINT(("  -h                  : Display this usage\n"));
 }
 
@@ -97,7 +95,7 @@ bool parse_cmdline_option(int argc, char *argv[], char* file_name, IDE_TEST_CONF
   }
   TEEIO_PRINT(("%s\n", buf));
 
-  while ((opt = getopt(argc, argv, "f:t:c:s:l:g:b:n:e:krdh")) != -1) {
+  while ((opt = getopt(argc, argv, "f:t:c:s:l:g:b:n:e:krh")) != -1) {
       switch (opt) {
           case 'f':
               if(!validate_file_name(optarg)) {
@@ -178,10 +176,6 @@ bool parse_cmdline_option(int argc, char *argv[], char* file_name, IDE_TEST_CONF
 
         case 'r':
             g_no_teardown = true;
-            break;
-
-        case 'd':
-            g_reuse_ide_stream = true;
             break;
 
           case 'h':

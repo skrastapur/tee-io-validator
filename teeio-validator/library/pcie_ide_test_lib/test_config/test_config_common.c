@@ -20,7 +20,6 @@
 #include "pcie_ide_test_lib.h"
 
 extern const char *IDE_TEST_IDE_TYPE_NAMES[];
-extern bool g_reuse_ide_stream;
 
 const char *IDE_STREAM_STATUS_NAME[] = {
     "Secure",
@@ -167,16 +166,6 @@ bool test_config_enable_common(void *test_context)
 
   pcie_ide_test_group_context_t *group_context = config_context->group_context;
   TEEIO_ASSERT(group_context->common.signature == GROUP_CONTEXT_SIGNATURE);
-
-  if (g_reuse_ide_stream) {
-    TEEIO_DEBUG((TEEIO_DEBUG_INFO,
-                 "Teardown mode: skip IDE configuration reset.\n"));
-    teeio_record_config_item_result(
-        IDE_TEST_CONFIGURATION_TYPE_DEFAULT,
-        TEEIO_TEST_CONFIG_FUNC_ENABLE,
-        TEEIO_TEST_RESULT_PASS);
-    return true;
-  }
 
   // if connection is via switch or P2P, then we shall set ft_supported in the switch's port
   ide_common_test_switch_internal_conn_context_t* conn;

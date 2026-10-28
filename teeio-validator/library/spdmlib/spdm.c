@@ -249,32 +249,38 @@ libspdm_return_t spdm_send_receive_get_measurement(void *spdm_context,
     return LIBSPDM_STATUS_SUCCESS;
 }
 
-static bool spdm_start_authenticated_session(void *spdm_context,
-                                             uint32_t *session_id,
-                                             bool save_certificate)
+bool spdm_connect (void *spdm_context, uint32_t *session_id)
 {
     libspdm_return_t status;
+    uint32_t measurement_record_length;
+    uint8_t measurement_record[LIBSPDM_MAX_MEASUREMENT_RECORD_SIZE];
     spdm_attester_cert_chain_struct_t cert_chain;
+    uint8_t slot_id;
+    // uint32_t session_id;
+    uint32_t data32;
+    size_t data_size;
+    libspdm_data_parameter_t parameter;
     char cert_chain_name[] = "device_cert_chain_0.bin";
+    char measurement_name[] = "device_measurement.bin";
+
+    TEEIO_DEBUG((TEEIO_DEBUG_INFO, "spdm_connect\n"));
 
     /* get cert_chain 0 */
+    slot_id = 0;
     cert_chain.cert_chain_size = sizeof(cert_chain.cert_chain);
     libspdm_zero_mem (cert_chain.cert_chain, sizeof(cert_chain.cert_chain));
-    status = libspdm_get_certificate (spdm_context, NULL, 0,
+    status = libspdm_get_certificate (spdm_context, NULL, slot_id,
                                       &cert_chain.cert_chain_size,
                                       cert_chain.cert_chain);
     if (LIBSPDM_STATUS_IS_ERROR(status)) {
-        TEEIO_DEBUG((TEEIO_DEBUG_INFO,
-                     "libspdm_get_certificate (slot=0) - %x\n",
-                     (uint32_t)status));
+        TEEIO_DEBUG((TEEIO_DEBUG_INFO, "libspdm_get_certificate (slot=%d) - %x\n", slot_id, (uint32_t)status));
         return false;
     }
-    if (save_certificate) {
-        TEEIO_DEBUG((TEEIO_DEBUG_INFO, "write file - %s\n", cert_chain_name));
-        libspdm_write_output_file (cert_chain_name,
-                                   cert_chain.cert_chain,
-                                   cert_chain.cert_chain_size);
-    }
+    cert_chain_name[18] = slot_id + '0';
+    TEEIO_DEBUG((TEEIO_DEBUG_INFO, "write file - %s\n", cert_chain_name));
+    libspdm_write_output_file (cert_chain_name,
+                               cert_chain.cert_chain,
+                               cert_chain.cert_chain_size);
 
     /* setup session based on slot 0 */
     status = libspdm_start_session(
@@ -287,34 +293,6 @@ static bool spdm_start_authenticated_session(void *spdm_context,
                 NULL, NULL);
     if (LIBSPDM_STATUS_IS_ERROR(status)) {
         TEEIO_DEBUG((TEEIO_DEBUG_ERROR, "libspdm_start_session - %x\n", (uint32_t)status));
-        return false;
-    }
-
-    return true;
-}
-
-bool spdm_connect_for_teardown(void *spdm_context, uint32_t *session_id)
-{
-    TEEIO_DEBUG((TEEIO_DEBUG_INFO, "spdm_connect_for_teardown\n"));
-    return spdm_start_authenticated_session(spdm_context, session_id, false);
-}
-
-bool spdm_connect (void *spdm_context, uint32_t *session_id)
-{
-    libspdm_return_t status;
-    uint32_t measurement_record_length;
-    uint8_t measurement_record[LIBSPDM_MAX_MEASUREMENT_RECORD_SIZE];
-    spdm_attester_cert_chain_struct_t cert_chain;
-    uint8_t slot_id;
-    uint32_t data32;
-    size_t data_size;
-    libspdm_data_parameter_t parameter;
-    char cert_chain_name[] = "device_cert_chain_0.bin";
-    char measurement_name[] = "device_measurement.bin";
-
-    TEEIO_DEBUG((TEEIO_DEBUG_INFO, "spdm_connect\n"));
-
-    if (!spdm_start_authenticated_session(spdm_context, session_id, true)) {
         return false;
     }
 
